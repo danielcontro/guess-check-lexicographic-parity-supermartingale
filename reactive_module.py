@@ -28,6 +28,9 @@ class LinearFunction:
     def __call__(self, state: State) -> Value | ArithRef:
         return substitute_state(self.f, state)
 
+    def post_exp(self, successors: list[tuple[float, State]]) -> Value | ArithRef:
+        return sum(map(lambda succ: succ[0] * self(succ[1]), successors))
+
 
 class QLinearFunction:
     def __init__(self, vars: list[Variable], f: dict[int, LinearFunction]):
@@ -52,7 +55,7 @@ class QLinearFunction:
     def post_exp(
         self, q: int, succ_distr: list[tuple[float, State]]
     ) -> Value | ArithRef:
-        return sum(map(lambda succ: succ[0] * self.f[q](succ[1]), succ_distr))
+        return self.f[q].post_exp(succ_distr)
 
 
 class StateUpdate:

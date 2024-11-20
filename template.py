@@ -28,6 +28,14 @@ class LinearTemplate:
     def __call__(self, state: State) -> Value | ArithRef:
         return self._template(state)
 
+    def post_exp(self, succ_distr: list[tuple[float, State]]) -> Value | ArithRef:
+        return sum(
+            map(
+                lambda succ: succ[0] * self._template(succ[1]),
+                succ_distr,
+            )
+        )
+
 
 class QLinearTemplate:
     def __init__(self, name: str, states: list[int], vars: list[Variable]) -> None:
@@ -52,3 +60,8 @@ class QLinearTemplate:
             self._vars,
             {q: template.instantiate(model) for q, template in self._template.items()},
         )
+
+    def post_exp(
+        self, q: int, succ_distr: list[tuple[float, State]]
+    ) -> Value | ArithRef:
+        return self._template[q].post_exp(succ_distr)

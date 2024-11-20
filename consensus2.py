@@ -1,4 +1,4 @@
-from z3 import And, Int
+from z3 import And, Int, RealVal
 
 from lex_psm import Verification
 from reactive_module import (
@@ -7,6 +7,7 @@ from reactive_module import (
     ReactiveModule,
     StateUpdate,
     UpdateDistribution,
+    Variable,
 )
 
 
@@ -30,7 +31,7 @@ state_space = And(
     q >= 0,
     q <= 1,
 )
-vars = [coin1, coin2, pc1, pc2, counter, q]
+vars: list[Variable] = [coin1, coin2, pc1, pc2, counter, q]
 f0 = LinearFunction([], 0)
 f1 = LinearFunction([], 1)
 f2 = LinearFunction([], 2)
@@ -108,4 +109,4 @@ system = ReactiveModule(
 
 psm = Verification(system)
 
-psm.guess_check_linlexpsm_invariant_synthesis([0, 1], [q == 0, q == 1])
+psm.guess_check_linlexpsm_invariant_synthesis([0, 1], [q == 0, q == 1], 1.0)

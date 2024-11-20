@@ -1,3 +1,4 @@
+import re
 from typing import Literal, TypeVar
 
 from z3 import (
@@ -118,6 +119,8 @@ def substitute_state(expr: ArithRef | BoolRef, state):
 
 
 def integer_to_int(integer: IntNumRef) -> int:
+    if integer is None:
+        return 0
     return integer.as_long()
 
 
@@ -133,6 +136,15 @@ def real_to_float(real: ArithRef) -> float:
 
 
 def extract_var(var: ArithRef | BoolRef, model: ModelRef):
+    # if model[var] is not None:
+    #     return model[var]
+    # elif is_bool(var):
+    #     return False
+    # elif is_int(var):
+    #     return 0
+    # elif is_real(var):
+    #     return 0.0
+
     if is_bool(var):
         return bool_to_bool(model[var])
     elif is_int(var):
