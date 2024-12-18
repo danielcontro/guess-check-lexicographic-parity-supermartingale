@@ -1,4 +1,4 @@
-from z3 import And, Int, RealVal
+from z3 import And, Int, IntVal, RealVal
 
 from lex_psm import Verification
 from reactive_module import (
@@ -32,10 +32,10 @@ state_space = And(
     q <= 1,
 )
 vars: list[Variable] = [coin1, coin2, pc1, pc2, counter, q]
-f0 = LinearFunction([], 0)
-f1 = LinearFunction([], 1)
-f2 = LinearFunction([], 2)
-f3 = LinearFunction([], 3)
+f0 = LinearFunction([], IntVal(0))
+f1 = LinearFunction([], IntVal(1))
+f2 = LinearFunction([], IntVal(2))
+f3 = LinearFunction([], IntVal(3))
 counter_inc = LinearFunction([counter], counter + 1)
 counter_dec = LinearFunction([counter], counter - 1)
 
@@ -61,52 +61,76 @@ gc = [
         UpdateDistribution(vars, [(0.5, su1), (0.5, su2)]),
     ),
     GuardedCommand(
-        And(pc1 == 1, coin1 == 0, counter > 0, q == 0),
+        And(pc1 == 1, coin1 == 0, counter > 0, q == 1),
         UpdateDistribution(vars, [(1, su3)]),
     ),
     GuardedCommand(
-        And(pc1 == 1, coin1 == 1, counter < 12, q == 0),
+        And(pc1 == 1, coin1 == 1, counter < 12, q == 1),
         UpdateDistribution(vars, [(1, su4)]),
     ),
     GuardedCommand(
-        And(pc1 == 2, counter <= 2, q == 0), UpdateDistribution(vars, [(1, su5)])
+        And(pc1 == 2, counter <= 2, q == 1), UpdateDistribution(vars, [(1, su5)])
     ),
     GuardedCommand(
-        And(pc1 == 2, counter >= 10, q == 0), UpdateDistribution(vars, [(1, su6)])
+        And(pc1 == 2, counter >= 10, q == 1), UpdateDistribution(vars, [(1, su6)])
     ),
     GuardedCommand(
-        And(pc1 == 2, counter > 2, counter < 10, q == 0),
+        And(pc1 == 2, counter > 2, counter < 10, q == 1),
         UpdateDistribution(vars, [(1, su7)]),
     ),
     GuardedCommand(And(pc1 == 3, pc2 == 3), UpdateDistribution(vars, [(1, su8)])),
     GuardedCommand(
-        And(pc2 == 0, q == 0),
+        And(pc2 == 0, q == 1),
         UpdateDistribution(vars, [(0.5, su9), (0.5, su10)]),
     ),
     GuardedCommand(
-        And(pc2 == 1, coin2 == 0, counter > 0, q == 0),
+        And(pc2 == 1, coin2 == 0, counter > 0, q == 1),
         UpdateDistribution(vars, [(1, su11)]),
     ),
     GuardedCommand(
-        And(pc2 == 1, coin2 == 1, counter < 12, q == 0),
+        And(pc2 == 1, coin2 == 1, counter < 12, q == 1),
         UpdateDistribution(vars, [(1, su12)]),
     ),
     GuardedCommand(
-        And(pc2 == 2, counter <= 2, q == 0), UpdateDistribution(vars, [(1, su13)])
+        And(pc2 == 2, counter <= 2, q == 1), UpdateDistribution(vars, [(1, su13)])
     ),
     GuardedCommand(
-        And(pc2 == 2, counter >= 10, q == 0), UpdateDistribution(vars, [(1, su14)])
+        And(pc2 == 2, counter >= 10, q == 1), UpdateDistribution(vars, [(1, su14)])
     ),
     GuardedCommand(
-        And(pc2 == 2, counter > 2, counter < 10, q == 0),
+        And(pc2 == 2, counter > 2, counter < 10, q == 1),
         UpdateDistribution(vars, [(1, su15)]),
     ),
 ]
 
 system = ReactiveModule(
-    [{pc1: 0, coin1: 0, pc2: 0, coin2: 0, counter: 6, q: 1}], vars, gc, state_space
+    [
+        {
+            coin1: IntVal(0),
+            coin2: IntVal(0),
+            pc1: IntVal(0),
+            pc2: IntVal(0),
+            counter: IntVal(6),
+            q: IntVal(1),
+        }
+    ],
+    vars,
+    gc,
+    state_space,
 )
 
 psm = Verification(system)
+automata_states = [IntVal(0), IntVal(1)]
 
-psm.guess_check_linlexpsm_invariant_synthesis([0, 1], [q == 0, q == 1], 1.0)
+tree_lex_psm, inv = psm.guess_check_tree_psm(
+    system, automata_states, [q == IntVal(0), q == IntVal(1)], IntVal(1)
+)
+# lin_lex_psm, inv = psm.monolithic(
+#     system, [IntVal(0), IntVal(1)], [q == IntVal(0), q == IntVal(1)], IntVal(1.0)
+# )
+# lin_lex_psm, inv = psm.strict_proof_rule([0, 1], [q == 0, q == 1], 1.0)
+
+print("Invariant:")
+print(inv.symbolic)
+print("LexPSM:")
+print(tree_lex_psm)

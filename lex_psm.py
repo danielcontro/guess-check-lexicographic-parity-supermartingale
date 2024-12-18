@@ -1,30 +1,36 @@
 from itertools import chain
-from typing import Optional
-from multiprocessing import Pool, Process, Queue
 
 from z3 import (
     And,
     ArithRef,
     BoolRef,
+    ForAll,
     Implies,
-    Int,
+    IntNumRef,
+    IntVal,
     ModelRef,
+    Not,
     Or,
-    RealVal,
     Solver,
-    simplify,
+    sat,
     unsat,
 )
 
 from reactive_module import (
-    LinearFunction,
+    Q,
     QLinearFunction,
+    QPolytopeFunction,
     ReactiveModule,
     State,
     UpdateDistribution,
 )
-from template import QLinearTemplate
-from utils import VAR_MANAGER, extract_var, satisfiable, substitute_state
+from tree_psm import TreePSM
+from utils import (
+    evaluate_to_true,
+    extract_var,
+    satisfiable,
+    substitute_state,
+)
 
 
 ParityObjective = BoolRef
@@ -38,31 +44,16 @@ class Verification:
     def system(self):
         return self._product_system
 
-    def inv_init(self, invariant_template: QLinearTemplate):
-        return list(map(lambda init: invariant_template(init) >= 0, self.system.init))
-
-    def inv_consec(
+    def inv_init(
         self,
-        dataset: list[State],
-        invariant_template: QLinearTemplate,
+        system: ReactiveModule,
+        invariant: QPolytopeFunction,
     ):
         return list(
             chain.from_iterable(
                 map(
-                    lambda state: map(
-                        lambda succ: Implies(
-                            And(
-                                substitute_state(self.system.state_space, state),
-                                invariant_template(state) >= 0,
-                            ),
-                            And(
-                                substitute_state(self.system.state_space, succ),
-                                invariant_template(succ) >= 0,
-                            ),
-                        ),
-                        self.system.successors(state),
-                    ),
-                    dataset,
+                    lambda init: [f >= 0 for f in invariant(init, init[Q])],
+                    system.init,
                 )
             )
         )
@@ -70,210 +61,68 @@ class Verification:
     def lexicographic_non_increase_constraint(
         self,
         j,
-        lin_lex_psm: list[QLinearTemplate],
+        lin_lex_psm: list[QLinearFunction],
+        q: IntNumRef,
         state: State,
-        command: UpdateDistribution,
+        post_distribution: list[tuple[float, State]],
         epsilon: ArithRef,
     ):
         # NOTE: The function gets invoked with an actual system state rather than a symbolic one
-        successors = command(state)
         return Or(
             *[
                 And(
                     *[
-                        lin_lex_psm[k].post_exp(state[Int("q")], successors)
-                        == lin_lex_psm[k](state)
+                        lin_lex_psm[k].post_exp(q, post_distribution)
+                        == lin_lex_psm[k](state, q)
                         for k in range(i)
                     ],
-                    lin_lex_psm[i].post_exp(state[Int("q")], successors)
-                    <= lin_lex_psm[i](state) - epsilon,
+                    lin_lex_psm[i].post_exp(q, post_distribution)
+                    <= lin_lex_psm[i](state, q) - epsilon,
                 )
                 for i in range(j)
             ],
             And(
                 *[
-                    lin_lex_psm[k].post_exp(state[Int("q")], successors)
-                    == lin_lex_psm[k](state)
+                    lin_lex_psm[k].post_exp(q, post_distribution)
+                    == lin_lex_psm[k](state, q)
                     for k in range(j)
                 ],
-                lin_lex_psm[j].post_exp(state[Int("q")], successors)
-                <= lin_lex_psm[j](state),
+                lin_lex_psm[j].post_exp(q, post_distribution)
+                <= lin_lex_psm[j](state, q),
             ),
         )
 
     def lexicographic_decrease_constraint(
         self,
-        j,
-        lin_lex_psm: list[QLinearTemplate],
+        j: int,
+        lin_lex_psm: list[QLinearFunction],
+        q: IntNumRef,
         state: State,
-        command: UpdateDistribution,
+        post_distribution: list[tuple[float, State]],
         epsilon: ArithRef,
     ):
         # NOTE: The function gets invoked with an actual system state rather than a symbolic one
-        successors = command(state)
+        next_q = post_distribution[0][1][Q]
         return Or(
             *[
                 And(
                     *[
-                        lin_lex_psm[k].post_exp(state[Int("q")], successors)
-                        == lin_lex_psm[k](state)
+                        lin_lex_psm[k].post_exp(next_q, post_distribution)
+                        == lin_lex_psm[k](state, q)
                         for k in range(i)
                     ],
-                    lin_lex_psm[i].post_exp(state[Int("q")], successors)
-                    <= lin_lex_psm[i](state) - epsilon,
+                    lin_lex_psm[i].post_exp(next_q, post_distribution)
+                    <= lin_lex_psm[i](state, q) - epsilon,
                 )
                 for i in range(j + 1)
             ]
         )
 
-    def drift_demonic(
-        self,
-        dataset: list[State],
-        invariant_template: QLinearTemplate,
-        lin_lex_psm_template: list[QLinearTemplate],
-        parity_objectives: list[ParityObjective],
-        epsilon: ArithRef,
-    ):
-        constraints = []
-        # epsilons: dict[tuple[int, int], list[ArithRef]] = {}
-        # epsilons: dict[int, list[ArithRef]] = {}
-        for state in dataset:
-            for j, parity_objective in enumerate(parity_objectives):
-                for gc in self.system.guarded_commands:
-                    premise = substitute_state(
-                        And(
-                            invariant_template(state) >= 0,
-                            parity_objective,
-                            gc.guard,
-                            self.system.state_space,
-                        ),
-                        state,
-                    )
-                    if not satisfiable(premise):
-                        """
-                        Would produce False => ... thus skip
-                        """
-                        continue
-
-                    constraints.append(
-                        Implies(
-                            premise,
-                            self.lexicographic_decrease_constraint(
-                                j,
-                                lin_lex_psm_template,
-                                state,
-                                gc.command,
-                                epsilon,
-                            )
-                            if j % 2
-                            else self.lexicographic_non_increase_constraint(
-                                j,
-                                lin_lex_psm_template,
-                                state,
-                                gc.command,
-                                epsilon,
-                            ),
-                        )
-                    )
-
-                    # if (j, k) not in epsilons:
-                    # if j not in epsilons:
-                    #     """
-                    #     If not previously ranked guard k for parity j, create new epsilons
-                    #     (else reuse)
-                    #     """
-                    #     epsilons[j] = [
-                    #         # VAR_MANAGER.new_symbol(f"epsilon({j},{k})[{i}]")
-                    #         VAR_MANAGER.new_symbol(f"epsilon({j})[{i}]")
-                    #         for i in range(j + 1)
-                    #     ]
-                    #
-                    # for i in range(j + 1):
-                    #     successors = command(state)
-                    #     assert successors is not None
-                    #     post_expectation = sum(
-                    #         succ[0] * lin_lex_psm_template[i](succ[1])
-                    #         for succ in successors
-                    #     )
-                    #     constraints.append(
-                    #         Implies(
-                    #             premise,
-                    #             post_expectation
-                    #             # <= lin_lex_psm_template[i](state) - epsilons[(j, k)][i],
-                    #             <= lin_lex_psm_template[i](state) - epsilons[j][i],
-                    #         )
-                    #     )
-                    #
-        # Add constraints for epsilons
-        # for (j, _), eps_i in epsilons.items():
-        # for j, eps_i in epsilons.items():
-        #     for i, eps in enumerate(eps_i):
-        #         if i == 0:
-        #             constraints.append(eps >= 0)
-        #             continue
-        #         constraints.append(
-        #             Implies(
-        #                 And(
-        #                     [eps_i[prec] == 0 for prec in range(i)],
-        #                 ),
-        #                 eps > 0 if i == j and (j % 2 == 1) else eps >= 0,
-        #             )
-        #         )
-        return constraints
-
-    def guess_non_neg_constraints(
-        self,
-        invariant_template: QLinearTemplate,
-        lin_lex_psm_template: list[QLinearTemplate],
-        dataset: list[State],
-    ):
-        """
-        ∀ lin_psm ∈ lin_lex_psm. ∀x ∈ dataset: invariant(x) >= 0 => lin_psm[k](x) >= 0
-        """
-        return list(
-            chain.from_iterable(
-                map(
-                    lambda lin_psm_template: map(
-                        lambda state: Implies(
-                            invariant_template(state) >= 0, lin_psm_template(state) >= 0
-                        ),
-                        dataset,
-                    ),
-                    lin_lex_psm_template,
-                )
-            )
-        )
-
-    def inv_init_check(self, invariant: QLinearFunction):
-        constraints = []
-        for init in self.system.init:
-            constraints.append(invariant(init) < 0)
-        return constraints
-
-    def inv_consec_check(self, invariant: QLinearFunction):
-        constraints = []
-        for gc in self.system.guarded_commands:
-            for update in gc.command.updates:
-                for q, q_invariant in invariant.f.items():
-                    constraints.append(
-                        simplify(
-                            And(
-                                Int("q") == q,
-                                q_invariant.f >= 0,
-                                gc.guard,
-                                self.system.state_space,
-                                invariant(update.symbolic_successor()) < 0,
-                            )
-                        )
-                    )
-
-        return constraints
-
     def _neg_lexicographic_non_increase_constraint(
         self,
         j,
         lin_lex_psm: list[QLinearFunction],
-        q: int,
+        q: IntNumRef,
         command: UpdateDistribution,
         epsilon: ArithRef,
     ):
@@ -288,7 +137,7 @@ class Verification:
                         for k in range(i)
                     ],
                     lin_lex_psm[i].post_exp(q, successors)
-                    > lin_lex_psm[i].symbolic[q] - RealVal(epsilon),
+                    > lin_lex_psm[i].symbolic[q] - IntVal(epsilon),
                 )
                 for i in range(j)
             ],
@@ -323,242 +172,584 @@ class Verification:
             ]
         )
 
-    def drift_check(
+    def extract_counterexample(self, system: ReactiveModule, model: ModelRef) -> State:
+        return {var: extract_var(var, model) for var in system.vars}
+
+    def post_psm_lexicographic_constraint(
         self,
+        j: int,
         lin_lex_psm: list[QLinearFunction],
-        invariant: QLinearFunction,
-        parity_objectives: list[ParityObjective],
+        q: IntNumRef,
+        state: State,
+        post_distribution: list[tuple[float, State]],
         epsilon: ArithRef,
     ):
-        constraints = []
+        return (
+            self.lexicographic_decrease_constraint(
+                j, lin_lex_psm, q, state, post_distribution, epsilon
+            )
+            if j % 2
+            else self.lexicographic_non_increase_constraint(
+                j, lin_lex_psm, q, state, post_distribution, epsilon
+            )
+        )
 
-        for j, parity_objective in enumerate(parity_objectives):
-            for gc in self.system.guarded_commands:
-                for q, q_invariant in invariant.f.items():
-                    # print(f"Drift check j={j} k={k} q={q}:")
-                    # print("Lex constraint:\n", lex_constraint)
-                    constraint = simplify(
-                        And(
-                            Int("q") == q,
-                            q_invariant.f >= 0,
-                            self.system.state_space,
-                            parity_objective,
-                            self._neg_lexicographic_decrease_constraint(
-                                j, lin_lex_psm, q, gc.command, epsilon
-                            )
-                            if j % 2
-                            else self._neg_lexicographic_non_increase_constraint(
-                                j, lin_lex_psm, q, gc.command, epsilon
-                            ),
-                        )
-                    )
-                    # print("constraint:\n", constraint)
-                    constraints.append(constraint)
-
-        return constraints
-
-    def check_non_neg_constraints(
-        self, invariant: QLinearFunction, lin_lex_psm: list[QLinearFunction]
-    ):
-        """
-        ∃ x ∈ ℝⁿ×ℕᵐ. ∃ lin_psm ∈ lin_lex_psm. invariant(x) >= 0 ∧ TI(x) ∧ lin_psm(x) < 0
-        """
-        constraints = []
-        for q, q_invariant in invariant.f.items():
-            for lin_psm in lin_lex_psm:
-                constraints.append(
-                    And(
-                        Int("q") == q,
-                        q_invariant.f >= 0,
-                        self.system.state_space,
-                        lin_psm.symbolic[q] < 0,
+    def psm_constraints(
+        self,
+        system: ReactiveModule,
+        parity_objectives: list[ParityObjective],
+        epsilon: ArithRef,
+        lex_psm: list[QLinearFunction],
+        invariant: QPolytopeFunction,
+        state: State,
+    ) -> list[BoolRef]:
+        automaton_states = (
+            [q]
+            if isinstance(q := state.get(Q), IntNumRef)
+            else list(map(lambda q: IntVal(q), invariant.symbolic.keys()))
+        )
+        inv_consec = []
+        drift = []
+        non_negativity = []
+        for q in automaton_states:
+            for psm in lex_psm:
+                non_negativity.append(
+                    substitute_state(
+                        Implies(
+                            And(Q == q, *[f >= 0 for f in invariant(state, q)]),
+                            psm(state, q) >= 0,
+                        ),
+                        state,
                     )
                 )
-        return constraints
+            for guarded_command in system.guarded_commands:
+                for update in guarded_command.command.updates:
+                    if not satisfiable(
+                        premise := substitute_state(
+                            And(
+                                Q == q,
+                                *[f >= 0 for f in invariant(state, q)],
+                                system.state_space,
+                                guarded_command.guard,
+                            ),
+                            state,
+                        )
+                    ):
+                        continue
+                    succ = update(state)
+                    constraint = substitute_state(
+                        Implies(
+                            premise,
+                            And(*[f >= 0 for f in invariant(succ, succ[Q])]),
+                        ),
+                        state,
+                    )
+                    inv_consec.append(constraint)
 
-    def _extract_counterexample(self, model: ModelRef):
-        return {var: model[var] for var in self.system.vars}
-
-    def constraint_solver(self, constraint: BoolRef):
-        solver = Solver()
-        solver.add(constraint)
-        if solver.check() == unsat:
-            # queue.put(None)
-            return None
-        model = solver.model()
-        print("Constraint:", constraint)
-        # queue.put({var: extract_var(var, model) for var in self.system.vars})
-        print("Check model:")
-        for var in model:
-            print(var, "=", model[var])
-        return {var: extract_var(var, model) for var in self.system.vars}
+                for j, parity_objective in enumerate(parity_objectives):
+                    if not satisfiable(
+                        premise := substitute_state(
+                            And(
+                                Q == q,
+                                *[f >= 0 for f in invariant(state, q)],
+                                system.state_space,
+                                guarded_command.guard,
+                                parity_objective,
+                            ),
+                            state,
+                        )
+                    ):
+                        continue
+                    constraint = substitute_state(
+                        Implies(
+                            premise,
+                            self.post_psm_lexicographic_constraint(
+                                j,
+                                lex_psm,
+                                q,
+                                state,
+                                guarded_command.command(state),
+                                epsilon,
+                            ),
+                        ),
+                        state,
+                    )
+                    drift.append(constraint)
+        return inv_consec + drift + non_negativity
 
     def guess(
         self,
-        dataset: list[State],
-        invariant_template: QLinearTemplate,
-        lin_lex_psm_template: list[QLinearTemplate],
+        system: ReactiveModule,
+        parity_states: list[IntNumRef],
         parity_objectives: list[ParityObjective],
         epsilon: ArithRef,
+        dataset: list[State],
+        polyhedra_dimensions: int = 1,
     ):
-        guesser = Solver()
-        non_neg = self.guess_non_neg_constraints(
-            invariant_template, lin_lex_psm_template, dataset
+        lin_lex_psm_template = [
+            QLinearTemplate(f"V{i}", parity_states, system.vars)
+            for i in range(len(parity_objectives))
+        ]
+        invariant_template = QPolytopeFunction.template(
+            "I",
+            system.vars,
+            parity_states,
+            polyhedra_dimensions,
         )
-        inv_init = self.inv_init(invariant_template)
-        inv_consec = self.inv_consec(dataset, invariant_template)
-        drift = self.drift_demonic(
-            dataset,
-            invariant_template,
-            lin_lex_psm_template,
-            parity_objectives,
-            epsilon,
-        )
-        print("Guess Constraints:")
-        print("Non-negativity")
-        for c in non_neg:
-            print(c)
-        print("Initial")
-        for c in inv_init:
-            print(c)
-        print("Consecution")
-        for c in inv_consec:
-            print(c)
-        print("Drift")
-        for c in drift:
-            print(c)
-
-        guesser.add(*non_neg)
-        guesser.add(*inv_init)
-        guesser.add(*inv_consec)
-        guesser.add(
-            *drift,
-            epsilon > 0,
-        )
-        if guesser.check() == unsat:
-            raise ValueError("No LexPSM candidate found")
-        model = guesser.model()
-        print("Model")
-        print(model)
+        constraints = self.inv_init(system, invariant_template)
+        for state in dataset:
+            constraints.extend(
+                self.psm_constraints(
+                    system,
+                    parity_objectives,
+                    epsilon,
+                    lin_lex_psm_template,
+                    invariant_template,
+                    state,
+                )
+            )
+        solver = Solver()
+        solver.add(*constraints)
+        print("Guess conjunction size:", len(constraints))
+        result = solver.check()
+        if result == unsat:
+            return None, None
+        assert result == sat
+        model = solver.model()
+        # print("Guess Model:")
+        # print(model)
         lin_lex_psm_candidate = [
             lin_lex_psm_template[i].instantiate(model)
             for i in range(len(lin_lex_psm_template))
         ]
         invariant_candidate = invariant_template.instantiate(model)
-        print("Candidate PSM")
-        for psm in lin_lex_psm_candidate:
-            print(psm.symbolic)
-        print("Candidate invariant")
-        print(invariant_candidate.symbolic)
-        return (
-            lin_lex_psm_candidate,
-            invariant_candidate,
-            model[epsilon] if not isinstance(epsilon, float) else epsilon,
-        )
+
+        return lin_lex_psm_candidate, invariant_candidate
 
     def check(
         self,
-        lin_lex_psm: list[QLinearFunction],
-        invariant: QLinearFunction,
+        system: ReactiveModule,
+        parity_objectives: list[ParityObjective],
+        epsilon: ArithRef,
+        spm: list[QLinearFunction],
+        inv: QPolytopeFunction,
+    ):
+        constraints = [
+            *self.inv_init(system, inv),
+            *self.psm_constraints(
+                system, parity_objectives, epsilon, spm, inv, system.symbolic_state
+            ),
+        ]
+        counterexamples: list[State] = []
+        print("Check disjunction size:", len(constraints))
+        for constraint in constraints:
+            solver = Solver()
+            solver.add(Not(constraint))
+            result = solver.check()
+            if result == sat:
+                new_counterexample = self.extract_counterexample(system, solver.model())
+                # Ensure that the counterexample is not already in the list
+                if not any(
+                    all(new_counterexample[var] == old[var] for var in system.vars)
+                    for old in counterexamples
+                ):
+                    counterexamples.append(new_counterexample)
+
+        return counterexamples
+
+    def guess_check(
+        self,
+        system: ReactiveModule,
+        parity_states: list[IntNumRef],
         parity_objectives: list[ParityObjective],
         epsilon: ArithRef,
     ):
-        """
-        for each constraint create parallel solver, shortcircut if some solver is sat,
-        if all unsat then the candidate are correct
-        """
-        constraints = []
-        non_neg = self.check_non_neg_constraints(invariant, lin_lex_psm)
-        inv_init = self.inv_init_check(invariant)
-        inv_consec = self.inv_consec_check(invariant)
-        drift = self.drift_check(lin_lex_psm, invariant, parity_objectives, epsilon)
-
-        print("Check Constraints:")
-        print("Non-negativity")
-        for c in non_neg:
-            print(c)
-        print("Initial")
-        for c in inv_init:
-            print(c)
-        print("Consecution")
-        for c in inv_consec:
-            print(c)
-        print("Drift")
-        for c in drift:
-            print(c)
-
-        constraints.extend(non_neg)
-        constraints.extend(inv_init)
-        constraints.extend(inv_consec)
-        constraints.extend(drift)
-
-        processes: list[Process] = []
-        queue: Queue[Optional[State]] = Queue(maxsize=10)
-        counterexamples: list[State] = []
-        for constraint in constraints:
-            counterexample = self.constraint_solver(
-                And(
-                    constraint,
-                    *[var != val for var, val in counterexamples[-1].items()]
-                    if len(counterexamples) == 0
-                    else True,
-                )
+        dataset = system.init.copy()
+        CUTOFF = 100
+        polyhedra_dimensions = 1
+        for i in range(CUTOFF):
+            print(f"\n\nGuess-check {i+1}-th iteration")
+            spm, inv = self.guess(
+                system,
+                parity_states,
+                parity_objectives,
+                epsilon,
+                dataset,
+                polyhedra_dimensions,
             )
-            if counterexample is not None:
-                counterexamples.append(counterexample)
-        #     p = Process(target=self.constraint_solver, args=[constraint, queue])
-        #     processes.append(p)
-        #     p.start()
-        # terminated = 0
-        # counterexample: Optional[State] = None
-        # while terminated < len(constraints) or counterexample is None:
-        #     counterexample = queue.get()
-        #     print("Terminated!")
-        #     print(counterexample)
-        #     terminated += 1
-        #
-        # for p in processes:
-        #     p.terminate()
-        # print("Counterexamples:")
-        # for c in counterexamples:
-        #     print(c)
-        return counterexamples
+            if spm is None or inv is None:
+                polyhedra_dimensions += 1
+                print("Increasing polyhedra dimensions to:", polyhedra_dimensions)
+                continue
+            print("Invariant:")
+            print(inv)
+            print("Lexicographic PSM:")
+            for psm in spm:
+                print(psm)
+            for state in dataset:
+                constraints = [
+                    *self.inv_init(system, inv),
+                    *self.psm_constraints(
+                        system, parity_objectives, epsilon, spm, inv, state
+                    ),
+                ]
+                for constraint in constraints:
+                    solver = Solver()
+                    solver.add(Not(constraint))
+                    result = solver.check()
+                    if result == sat:
+                        print("Substitution Constraint:\n", solver.assertions())
+                        print("Model:\n", solver.model())
+                        assert False
 
-    def guess_check_linlexpsm_invariant_synthesis(
+            for state in dataset:
+                constraints = [
+                    *self.inv_init(system, inv),
+                    *self.psm_constraints(
+                        system,
+                        parity_objectives,
+                        epsilon,
+                        spm,
+                        inv,
+                        system.symbolic_state,
+                    ),
+                ]
+                for constraint in constraints:
+                    solver = Solver()
+                    solver.add(
+                        And(Not(constraint)),
+                        *[var == state[var] for var in system.vars],
+                    )
+                    result = solver.check()
+                    if result == sat:
+                        print("Assign Constraint:\n", solver.assertions())
+                        print("Model:\n", solver.model())
+                        assert False
+
+            assert all(
+                evaluate_to_true(
+                    And(
+                        *self.inv_init(system, inv),
+                        *self.psm_constraints(
+                            system, parity_objectives, epsilon, spm, inv, state
+                        ),
+                    )
+                )
+                for state in dataset
+            )
+            counterexamples = self.check(
+                self.system, parity_objectives, epsilon, spm, inv
+            )
+            print("New counterexamples:")
+            for counterexample in counterexamples:
+                print(counterexample)
+                assert all(var in counterexample for var in system.vars)
+
+            print("Dataset:")
+            for counterexample in dataset:
+                print(counterexample)
+
+            if len(counterexamples) == 0:
+                return spm, inv
+            dataset.extend(counterexamples)
+        raise ValueError("TIMEOUT: No LexPSM and Invariant found!")
+
+    def monolithic(
         self,
-        spec_automaton_states: list[int],
-        s: list[ParityObjective],
+        system: ReactiveModule,
+        parity_states: list[IntNumRef],
+        parity_objectives: list[ParityObjective],
+        epsilon: ArithRef,
+    ) -> tuple[list[QLinearFunction], QPolytopeFunction]:
+        psm_template = [
+            QLinearTemplate(f"V{i}", parity_states, system.vars)
+            for i in range(len(parity_objectives))
+        ]
+
+        inv_template = QPolytopeFunction.template(
+            "I",
+            system.vars,
+            parity_states,
+            10,
+        )
+        state = system.symbolic_state
+        constraints = self.inv_init(system, inv_template) + self.psm_constraints(
+            system, parity_objectives, epsilon, psm_template, inv_template, state
+        )
+        query = ForAll(system.vars, And(*constraints))
+        solver = Solver()
+        if solver.check(query) == unsat:
+            raise ValueError("No LexPSM and Invariant found!")
+        model = solver.model()
+        lin_lex_psm = [spm.instantiate(model) for spm in psm_template]
+        invariant = inv_template.instantiate(model)
+        return lin_lex_psm, invariant
+
+    def tree_psm_constraints(
+        self,
+        system: ReactiveModule,
+        parity_objectives: list[ParityObjective],
+        epsilon: ArithRef,
+        tpsm: TreePSM,
+        invariant: QPolytopeFunction,
+        state: State,
+    ) -> list[BoolRef]:
+        parity_states = (
+            [q]
+            if isinstance(q := state.get(Q), IntNumRef)
+            else list(map(lambda q: IntVal(q), invariant.states))
+        )
+
+        # non_negativity = []
+        # for q in parity_states:
+        #     for i in range(len(tpsm.lex_psms)):
+        #         lex_psm_constraint, lex_psm = tpsm[i, q]
+        #         non_negativity.extend(
+        #             [
+        #                 substitute_state(
+        #                     Implies(
+        #                         And(
+        #                             Q == q,
+        #                             *[f >= 0 for f in invariant(state, q)],
+        #                             lex_psm_constraint,
+        #                         ),
+        #                         psm(state) >= 0,
+        #                     ),
+        #                     state,
+        #                 )
+        #                 for psm in lex_psm
+        #             ]
+        #         )
+        #
+
+        # Invariant consecution constraints
+        inv_consec = []
+        for q in parity_states:
+            for gc in system.guarded_commands:
+                for update in gc.command.updates:
+                    if not satisfiable(
+                        premise := substitute_state(
+                            And(
+                                Q == q,
+                                *[f >= 0 for f in invariant(state, q)],
+                                system.state_space,
+                                gc.guard,
+                            ),
+                            state,
+                        )
+                    ):
+                        continue
+                    succ = update(state)
+                    constraint = substitute_state(
+                        Implies(
+                            premise,
+                            And(*[f >= 0 for f in invariant(succ, succ[Q])]),
+                        ),
+                        state,
+                    )
+                    inv_consec.append(constraint)
+
+        # Drift constraints
+        drift = []
+        for q in parity_states:
+            for p, objective in enumerate(parity_objectives):
+                for gc in system.guarded_commands:
+                    for i in range(len(tpsm.lex_psms)):
+                        lex_psm_constraint, lex_psm = tpsm[i, q]
+                        # Drift constraints
+                        if not satisfiable(
+                            premise := (
+                                substitute_state(
+                                    And(
+                                        system.state_space,
+                                        gc.guard,
+                                        objective,
+                                        Q == q,
+                                        *[f >= 0 for f in invariant(state, q)],
+                                        lex_psm_constraint,
+                                    ),
+                                    state,
+                                )
+                            )
+                        ):
+                            continue
+                        posts = tpsm.post(gc, state, p)
+                        assert isinstance(posts, list)
+                        constraint = substitute_state(
+                            Implies(
+                                premise,
+                                Or(
+                                    *[
+                                        self.lexicographic_constraint(
+                                            post,
+                                            [v(state) for v in lex_psm],
+                                            p,
+                                            epsilon,
+                                        )
+                                        for post in posts
+                                    ]
+                                ),
+                            ),
+                            state,
+                        )
+                        drift.append(constraint)
+
+        return inv_consec + drift
+
+    def lexicographic_constraint(
+        self,
+        post_v: list[ArithRef],
+        v: list[ArithRef],
+        p: int,
         epsilon: ArithRef,
     ):
-        dataset = self.system.init.copy()
-        lin_lex_psm_template = [
-            QLinearTemplate(f"V{i}", spec_automaton_states, self.system.vars)
-            for i in range(len(s))
-        ]
-        invariant_template = QLinearTemplate(
-            "invariant", spec_automaton_states, self.system.vars
+        return (
+            self.lexicographic_decrease(post_v, v, p, epsilon)
+            if p % 2
+            else self.lexicographic_non_increase(post_v, v, p, epsilon)
         )
-        print("Invariant")
-        print(invariant_template.symbolic)
-        print("LinLexPSM")
-        for psm in lin_lex_psm_template:
-            print(psm.symbolic)
-        # FIX Time cutoff rather than iteration
-        CUTOFF = 10
-        for _ in range(CUTOFF):
-            lin_lex_psm_candidate, invariant_candidate, epsilon = self.guess(
-                dataset, invariant_template, lin_lex_psm_template, s, epsilon
-            )
 
-            counterexample = self.check(
-                lin_lex_psm_candidate, invariant_candidate, s, epsilon
+    def lexicographic_decrease(
+        self, post_v: list[ArithRef], v: list[ArithRef], p: int, epsilon: ArithRef
+    ):
+        return Or(
+            *[
+                And(
+                    *[post_v[k] == v[k] for k in range(i)],
+                    post_v[i] <= v[i] - epsilon,
+                )
+                for i in range(p + 1)
+            ]
+        )
+
+    def lexicographic_non_increase(
+        self, post_v: list[ArithRef], v: list[ArithRef], p: int, epsilon: ArithRef
+    ):
+        return Or(
+            self.lexicographic_decrease(post_v, v, p - 1, epsilon),
+            And(
+                *[post_v[k] == v[k] for k in range(p)],
+                post_v[p] <= v[p],
+            ),
+        )
+
+    def guess_tree_psm(
+        self,
+        system: ReactiveModule,
+        parity_states: list[IntNumRef],
+        parity_objectives: list[ParityObjective],
+        polytope_dimensions: int,
+        tree_psm_height: int,
+        epsilon: ArithRef,
+        dataset: list[State],
+    ):
+        tree_lex_psm = TreePSM.template(
+            system.vars, parity_states, tree_psm_height, len(parity_objectives)
+        )
+        invariant_template = QPolytopeFunction.template(
+            "I", system.vars, parity_states, polytope_dimensions
+        )
+        print("Invariant template:")
+        print(invariant_template)
+        print("TreePSM template:")
+        print(tree_lex_psm)
+        constraints = self.inv_init(system, invariant_template)
+        for state in dataset:
+            constraints.extend(
+                self.tree_psm_constraints(
+                    system,
+                    parity_objectives,
+                    epsilon,
+                    tree_lex_psm,
+                    invariant_template,
+                    state,
+                )
             )
-            if len(counterexample) == 0:
-                print("Done")
-                return lin_lex_psm_candidate, invariant_candidate
-            print("New counterexamples:", len(counterexample))
-            dataset.extend(counterexample)
-            print("Dataset size:", len(dataset))
+        solver = Solver()
+        solver.add(*constraints)
+        print("Guess conjunction size:", len(constraints))
+        result = solver.check()
+        if result == unsat:
+            return None, None
+        assert result == sat
+        model = solver.model()
+        print("Guess Model:")
+        print(model)
+        tree_psm_candidate = tree_lex_psm.instantiate(model)
+        invariant_candidate = invariant_template.instantiate(model)
+
+        return tree_psm_candidate, invariant_candidate
+
+    def check_tree_psm(
+        self,
+        system: ReactiveModule,
+        parity_objectives: list[ParityObjective],
+        epsilon: ArithRef,
+        lex_psm: TreePSM,
+        inv: QPolytopeFunction,
+    ):
+        constraints = [
+            *self.inv_init(system, inv),
+            *self.tree_psm_constraints(
+                system, parity_objectives, epsilon, lex_psm, inv, system.symbolic_state
+            ),
+        ]
+        counterexamples: list[State] = []
+        print("Check disjunction size:", len(constraints))
+        solver = Solver()
+        solver.add(Or(*[Not(constraint) for constraint in constraints]))
+        result = solver.check()
+        if result == sat:
+            counterexamples.append(self.extract_counterexample(system, solver.model()))
+
+        return counterexamples
+
+    def guess_check_tree_psm(
+        self,
+        system: ReactiveModule,
+        parity_states: list[IntNumRef],
+        parity_objectives: list[ParityObjective],
+        epsilon: ArithRef,
+    ):
+        dataset = system.init.copy()
+        CUTOFF = 100
+        polyhedra_dimensions = 1
+        tree_height = 2
+        for i in range(CUTOFF):
+            print(f"\n\nGuess-check {i+1}-th iteration")
+            tree_lex_psm, inv = self.guess_tree_psm(
+                system,
+                parity_states,
+                parity_objectives,
+                polyhedra_dimensions,
+                tree_height,
+                epsilon,
+                dataset,
+            )
+            if tree_lex_psm is None or inv is None:
+                polyhedra_dimensions += 1
+                tree_height += 1
+                print("Increasing polyhedra dimensions to:", polyhedra_dimensions)
+                print("Increasing psm height to:", tree_height)
+                continue
+            print("Invariant:")
+            print(inv)
+            print("TreePSM:")
+            print(tree_lex_psm)
+
+            counterexamples = self.check_tree_psm(
+                self.system, parity_objectives, epsilon, tree_lex_psm, inv
+            )
+            print("New counterexamples:")
+            for counterexample in counterexamples:
+                print(counterexample)
+                assert all(var in counterexample for var in system.vars)
+
             print("Dataset:")
-            for state in dataset:
-                print(state)
+            for counterexample in dataset:
+                print(counterexample)
+
+            if len(counterexamples) == 0:
+                return tree_lex_psm, inv
+            dataset.extend(counterexamples)
+        raise ValueError("TIMEOUT: No LexPSM and Invariant found!")

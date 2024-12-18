@@ -1,0 +1,134 @@
+\documentclass[a4paper,12pt, english]{article}
+
+\usepackage{import}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage{stmaryrd}
+\usepackage{forest}
+
+\author{Daniel Eduardo Contro}
+\date{A.Y. 2024/2025}
+\title{TreeLexPSM}
+
+
+\newcommand{\Implies}{\Rightarrow}
+\DeclareMathOperator{\Dom}{dom}
+\DeclareMathOperator{\Cod}{cod}
+\DeclareMathOperator{\Even}{even}
+\DeclareMathOperator{\Odd}{odd}
+\DeclareMathOperator{\Post}{Post}
+\DeclareMathOperator{\Prob}{Pr}
+
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+In order to improve the expressiveness of the original \textit{LexPSM} template, we introduce a
+generalization of it called \textit{TreeLexPSM}.
+Given a reactive system $System^\phi=\langle S, TI, Init^\phi, \mathcal{G}^\phi \rangle$ and a
+parity automaton $\mathcal{A} = \langle Q, \Sigma, \delta, q_0, c \rangle$ with
+$c : Q \rightarrow \mathbb{N}_{<d}$ the associated coloring function, we define the product
+as $Product^\phi=\langle S \times Q, \Sigma, \mathcal{G}^\phi_\times, (q_0, Init^\phi), c \rangle$
+where $\mathcal{G}^\phi_\times = "\delta \times \mathcal{G}^\phi"$,
+A \textit{TreeLexPSM} is a family $\Pi = (\Pi_p)_{p \in \mathbb{N}_{<d}}$ of complete binary decision trees
+of height $h$, where every node is associated to a linear constraint and each leaf has a unique
+\textit{LexPSM} related to it.
+
+This induces a family $\mathcal{P}=(\mathcal{P}_p)_{p \in \mathbb{N}_{<d}}$ of families
+$\mathcal{P}_p=(P_{p,n})_{n \in \mathbb{N}_{<2^h}}$, where any family $P_{p,i}$ can possibly be empty,
+which is a partition of the state space $S \times Q$.
+Furthermore every $P_{p,i} \in P_p$ is associated with a
+\textit{LexPSM} $\lambda_{p,i} : S \to \mathbb{R}^d$.
+
+\begin{figure}[h!]
+	\begin{center}
+		\begin{forest}
+			[$n_0$
+				[$n_1$ [$n_3$ [$l_0$] [$l_1$] ] [$n_4$ [$l_2$] [$l_3$] ] ]
+					[$n_2$ [$n_5$ [$l_4$] [$l_5$] ] [$n_6$ [$l_6$] [$l_7$] ] ]
+			]
+		\end{forest}
+		\caption{Example of a \textit{TreeLexPSM} $\tau_0$ for parity level 0 of height 3.}
+	\end{center}
+\end{figure}
+
+\section{Proof Rule}
+
+The introduction of this new template requires the rewriting of the proof rule for the synthesis of
+a \textit{TreeLexPSM}.
+The original proof rule for \textit{LexPSM} is as follows:
+\begin{center}
+	\begin{figure}[h!]
+		\begin{tabular}{l}
+			$\forall \phi : I(q_0, Init^\phi) \ge 0$                                                                                 \\
+			$\forall \phi \forall x \in S \times Q \forall (g, U) \in \mathcal{G}^\phi_\times \forall u \in U :$                     \\
+			\qquad $TI(x) \land I(x) \ge 0 \land g(x) \Implies I(u(x)) \ge 0$                                                        \\
+			$\forall \phi \forall \Even p \in \mathbb{N}_{<d} \forall x \in S \times Q \forall (g, U) \in \mathcal{G}^\phi_\times :$ \\
+			\qquad $O_p(x) \land TI(x) \land I(x) \ge 0 \land g(x) \Implies \Post V^\phi(x) \preceq^{\varepsilon}_{p} V^\phi(x)$     \\
+			$\forall \phi \forall \Odd p \in \mathbb{N}_{<d} \forall x \in S \times Q \forall (g, U) \in \mathcal{G}^\phi_\times :$  \\
+			\qquad $O_p(x) \land TI(x) \land I(x) \ge 0 \land g(x) \Implies \Post V^\phi(x) \prec^{\varepsilon}_{p} V^\phi(x)$       \\
+			\hline
+			$\forall \phi : \Prob \left( System^\phi \vDash Spec \right) = 1$
+		\end{tabular}
+		\caption{Proof rule of \textit{LexPSM}.}
+	\end{figure}
+\end{center}
+
+Let us define
+$ith^{\phi,\Pi} : \mathbb{N}_{<d} \times \mathbb{N}_{<2^h} \to \wp(S \times Q) \times ((S \times Q) \times \mathbb{N}_{<d} \to \mathbb{R}^d)$
+as the function that maps an index to a pair of a partition of the state space and the associated \textit{LexPSM}
+\begin{equation}
+	ith^{\phi,\Pi}(p, i) = (P_{p,i}, \lambda_{p,i})
+\end{equation}
+
+$V^{\phi,\Pi} : (S \times Q) \times \mathbb{N}_{<d} \to \mathbb{R}^d$:
+\begin{equation}
+	V^{\phi,\Pi}(x, p) = \begin{cases}
+		\lambda^\phi_{p,0}(x)     & \text{if } x \in P^\phi_{p,0}     \\
+		\vdots                                                        \\
+		\lambda^\phi_{p,2^h-1}(x) & \text{if } x \in P^\phi_{p,2^h-1}
+	\end{cases}
+\end{equation}
+
+the $\Post_{(g, U)} : (S \times Q) \times \mathbb{N}_{<d} \to (\mathbb{R}^d)_{n \in \mathbb{N}_{<2^{|U|+h}}} $ operator for \textit{TreeLexPSM} is defined as:
+\begin{equation}
+	\begin{split}
+		Posts_U = \prod_{(p,u) \in U} & \{ p \cdot \lambda^\phi_{p,i}(u(x)) \mid \\
+		& \quad i \in \mathbb{N}_{<2^h} P^\phi_{p,i}, \lambda^\phi_{p,i} = ith^{\phi,\Pi}(p, i) P^\phi_{p,i} \cap u(x) \ne \emptyset \}
+	\end{split}
+\end{equation}
+\begin{equation}
+	\Post_{(g, U)} V^{\phi,\Pi}(x, p) = \left\{ \sum_{x' \in Posts_u} x' \mid Posts_u \in  Posts_U \right\}
+\end{equation}
+
+Now we can rewrite the proof rule for the synthesis of a \textit{TreeLexPSM}:
+\begin{center}
+	\begin{figure}[h!]
+		\begin{tabular}{l}
+			$\forall \phi : I(q_0, Init^\phi) \ge 0$                                                                                                                                                      \\
+			$\forall \phi \forall x \in S \times Q \forall (g, U) \in \mathcal{G}^\phi_\times \forall u \in U :$                                                                                          \\
+			\qquad $TI(x) \land I(x) \ge 0 \land g(x) \Implies I(u(x)) \ge 0$                                                                                                                             \\
+			$\forall \phi \forall \Even p \in \mathbb{N}_{<d} \forall x \in S \times Q \forall (g, U) \in \mathcal{G}^\phi_\times \forall i \in \mathbb{N}_{<2^h}:$                                       \\
+			\qquad $O_p(x) \land TI(x) \land I(x) \ge 0 \land g(x) \land P^\phi_{p,i}(x) \Implies \bigvee_{post \in \Post_{(g, U)} V^{\phi,\Pi}(x, p)} post \preceq^{\varepsilon}_{p} V^{\phi,\Pi}(x, p)$ \\
+			$\forall \phi \forall \Odd p \in \mathbb{N}_{<d} \forall x \in S \times Q \forall (g, U) \in \mathcal{G}^\phi_\times \forall i \in \mathbb{N}_{<2^h} :$                                       \\
+			\qquad $O_p(x) \land TI(x) \land I(x) \ge 0 \land g(x) \land P^\phi_{p,i}(x) \Implies \bigvee_{post \in \Post_{(g,U)} V^{\phi,\Pi}(x, p)} post \prec^{\varepsilon}_{p} V^{\phi,\Pi}(x,p)$     \\
+			\hline
+			$\forall \phi : \Prob \left( System^\phi \vDash Spec \right) = 1$
+		\end{tabular}
+		\caption{Proof rule of \textit{TreeLexPSM}.}
+	\end{figure}
+\end{center}
+
+\section{Future Work}
+
+For the time being a \textit{TreeLexPSM} has $d$ binary decision trees each one of height $h$;
+one possible improvement would be to allow different heights for each tree.
+This refinement would need further studies in order to be able to understand which of the binary
+trees requires a greater expressivity (height) or if it's the overall invariant $I$ that has to
+be refined in an CEGIS based guess-check algorithm implementation.
+
+\end{document}

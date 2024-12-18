@@ -21,6 +21,7 @@ from z3 import (
     sat,
     simplify,
     substitute,
+    unsat,
 )
 
 
@@ -84,7 +85,7 @@ VAR_MANAGER = _VarManager()
 def satisfiable(query):
     solver = Solver()
     solver.add(query)
-    return solver.check() == sat
+    return solver.check() != unsat
 
 
 def val_from_var(
@@ -103,36 +104,37 @@ def val_from_var(
 
 
 def substitute_state(expr: ArithRef | BoolRef, state):
-    if not isinstance(expr, ExprRef):
-        return expr
-    return simplify(
-        substitute(
-            expr,
-            *list(
-                map(
-                    lambda kv: (kv[0], val_from_var(kv[0], kv[1])),
-                    state.items(),
-                )
-            ),
-        )
+    return substitute(
+        expr,
+        *list(
+            map(
+                lambda kv: (kv[0], val_from_var(kv[0], kv[1])),
+                state.items(),
+            )
+        ),
     )
 
 
-def integer_to_int(integer: IntNumRef) -> int:
+def integer_to_int(integer: IntNumRef) -> IntNumRef:
     if integer is None:
-        return 0
+        print("Integer is None")
+        return 1
     return integer.as_long()
 
 
-def bool_to_bool(boolean: BoolRef) -> bool:
+def bool_to_bool(boolean: BoolRef) -> BoolRef:
+    if boolean is None:
+        print("Boolean is None")
+        return False
     return boolean.decl().name() == "true"
 
 
-def real_to_float(real: ArithRef) -> float:
+def real_to_float(real: ArithRef) -> RatNumRef:
     if real is None:
+        print("Real is None")
         return 0.0
-    fract = real.as_fraction()
-    return float(fract.numerator) / float(fract.denominator)
+    return real.as_fraction()
+    # return float(fract.numerator) / float(fract.denominator)
 
 
 def extract_var(var: ArithRef | BoolRef, model: ModelRef):
@@ -144,12 +146,22 @@ def extract_var(var: ArithRef | BoolRef, model: ModelRef):
     #     return 0
     # elif is_real(var):
     #     return 0.0
+    assert (val := model[var]) is None or is_bool(var) or is_int(var) or is_real(var)
 
-    if is_bool(var):
-        return bool_to_bool(model[var])
+    if val is not None:
+        return val
+    elif is_bool(var):
+        print("Bool is None")
+        return BoolVal(False)
     elif is_int(var):
-        return integer_to_int(model[var])
+        print("Int is None")
+        return IntVal(0)
     elif is_real(var):
-        return real_to_float(model[var])
-    else:
-        raise ValueError(f"Unknown variable type: {var}")
+        print("Real is None")
+        return RealVal(0.0)
+
+
+def evaluate_to_true(expr: BoolRef) -> bool:
+    e = simplify(expr)
+    assert e.eq(BoolVal(True)) or e.eq(BoolVal(False))
+    return e.eq(BoolVal(True))
