@@ -1,12 +1,10 @@
-import re
-from typing import Literal, TypeVar
+from typing import TypeVar
 
 from z3 import (
     ArithRef,
     Bool,
     BoolRef,
     BoolVal,
-    ExprRef,
     Int,
     IntNumRef,
     IntVal,
@@ -16,9 +14,10 @@ from z3 import (
     RealVal,
     Solver,
     is_bool,
+    is_false,
     is_int,
     is_real,
-    sat,
+    is_true,
     simplify,
     substitute,
     unsat,
@@ -114,6 +113,18 @@ def substitute_state(expr: ArithRef | BoolRef, state):
         ),
     )
 
+    # return simplify(
+    #     substitute(
+    #         expr,
+    #         *list(
+    #             map(
+    #                 lambda kv: (kv[0], val_from_var(kv[0], kv[1])),
+    #                 state.items(),
+    #             )
+    #         ),
+    #     )
+    # )
+
 
 def integer_to_int(integer: IntNumRef) -> IntNumRef:
     if integer is None:
@@ -165,3 +176,12 @@ def evaluate_to_true(expr: BoolRef) -> bool:
     e = simplify(expr)
     assert e.eq(BoolVal(True)) or e.eq(BoolVal(False))
     return e.eq(BoolVal(True))
+
+
+def is_value(e) -> bool:
+    return (
+        isinstance(e, IntNumRef)
+        or is_true(e)
+        or is_false(e)
+        or isinstance(e, RatNumRef)
+    )

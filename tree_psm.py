@@ -3,13 +3,12 @@ import math
 from typing import Optional
 
 from z3 import And, ArithRef, BoolRef, IntNumRef, IntVal, ModelRef
+from functions import IndexedPolynomial, Polynomial, Value, Variable, Valuation
 from reactive_module import (
     Q,
     GuardedCommand,
     LinearFunction,
     QLinearFunction,
-    State,
-    Variable,
 )
 from utils import satisfiable, substitute_state
 
@@ -18,37 +17,47 @@ class TreePSM:
     def __init__(
         self,
         vars: list[Variable],
-        linear_constraints: list[QLinearFunction],
-        lin_lex_psm: list[list[QLinearFunction]],
+        constraints: list[IndexedPolynomial],
+        lex_psm: list[list[IndexedPolynomial]],
     ):
         # Ensure height of the tree (including psm leaves) is at least 1
-        assert len(linear_constraints) >= 1
-        assert len(lin_lex_psm) >= 2
+        assert len(constraints) >= 1
+        assert len(lex_psm) >= 2
 
         # Ensure correct number of linear constraints and lex_psm
-        assert len(linear_constraints) + 1 == len(lin_lex_psm)
+        assert len(constraints) + 1 == len(lex_psm)
 
         self._vars = vars
-        self._linear_constraints = linear_constraints
-        self._lin_lex_psm = lin_lex_psm
+        self._constraints = constraints
+        self._lex_psm = lex_psm
 
     @staticmethod
     def template(
+        height: int,
         vars: list[Variable],
         states: list[IntNumRef],
-        height: int,
+        constraints_indexing: dict[Variable, list[Value]],
+        constraints_degree: int,
+        lex_psm_indexing: dict[Variable, list[Value]],
+        lex_psm_degree: int,
         lex_length: int,
     ):
         assert height >= 1
+        constraints_indexing[Q] = states
+        lex_psm_indexing[Q] = states
         return TreePSM(
             vars,
             [
-                QLinearFunction.template(f"C_n{i}", vars, states)
+                IndexedPolynomial.template(
+                    f"C_n{i}", vars, constraints_indexing, constraints_degree
+                )
                 for i in range(2**height - 1)
             ],
             [
                 [
-                    QLinearFunction.template(f"V_l{i}_d{p}", vars, states)
+                    IndexedPolynomial.template(
+                        f"V_l{i}_d{p}", vars, lex_psm_indexing, lex_psm_degree
+                    )
                     for p in range(lex_length)
                 ]
                 for i in range(2**height)
@@ -61,18 +70,18 @@ class TreePSM:
 
     @property
     def height(self):
-        return int(math.log(len(self._lin_lex_psm), 2))
+        return int(math.log(len(self._lex_psm), 2))
 
     @property
     def lex_psms(self):
-        return self._lin_lex_psm
+        return self._lex_psm
 
-    def ith(self, i: int) -> list[QLinearFunction]:
-        return self._lin_lex_psm[i]
+    def ith(self, i: int):
+        return self._lex_psm[i]
 
     def __getitem__(
         self, item: tuple[int, IntNumRef]
-    ) -> tuple[BoolRef, list[LinearFunction]]:
+    ) -> tuple[BoolRef, list[Polynomial]]:
         index, q = item
         binary_index = list(map(int, list(f"{index:0{self.height}b}")))
         # print("Height", self.height)
@@ -87,22 +96,22 @@ class TreePSM:
             Q == q,
             *[
                 (
-                    self._linear_constraints[idx][q].symbolic >= 0
+                    self._constraints[idx][q].symbolic >= 0
                     if binary_index[i]
-                    else self._linear_constraints[idx][q].symbolic < 0
+                    else self._constraints[idx][q].symbolic < 0
                 )
                 for i, idx in enumerate(constraint_nodes[:-1])
             ],
-        ), list(map(lambda psm: psm.symbolic[q.as_long()], self._lin_lex_psm[index]))
+        ), list(map(lambda psm: psm.symbolic[q.as_long()], self._lex_psm[index]))
 
     def __call__(
-        self, state: State, p: Optional[int] = None
+        self, state: Valuation, p: Optional[int] = None
     ) -> list[tuple[BoolRef, list[ArithRef]]]:
         values: list[tuple[BoolRef, list[ArithRef]]] = []
 
-        for i in range(len(self._lin_lex_psm)):
+        for i in range(len(self._lex_psm)):
             constraint, lex_psm = self[i, state[Q]]
-            if satisfiable(constraint := substitute_state(constraint, state)):
+            if satisfiable(constraint := substitute_point(constraint, state)):
                 values.append(
                     (
                         constraint,
@@ -118,16 +127,16 @@ class TreePSM:
 
     def __repr__(self) -> str:
         rep = ""
-        parity_states = list(self._linear_constraints[0].symbolic.keys())
+        parity_states = list(self._constraints[0].symbolic.keys())
         for q in parity_states:
             rep += f"Q = {q}\n"
-            for i in range(len(self._lin_lex_psm)):
+            for i in range(len(self._lex_psm)):
                 constraint, lex_psm = self[i, IntVal(q)]
                 rep += f"{constraint} =>\n {lex_psm}\n\n"
         return rep
 
     def post(
-        self, gc: GuardedCommand, state: State, p: int
+        self, gc: GuardedCommand, state: Valuation, p: int
     ) -> Optional[list[list[ArithRef]]]:
         post_distr = gc(state)
         if post_distr is None:
@@ -151,6 +160,6 @@ class TreePSM:
     def instantiate(self, model: ModelRef):
         return TreePSM(
             self.vars,
-            [lin_constr.instantiate(model) for lin_constr in self._linear_constraints],
-            [[psm.instantiate(model) for psm in row] for row in self._lin_lex_psm],
+            [lin_constr.instantiate(model) for lin_constr in self._constraints],
+            [[psm.instantiate(model) for psm in row] for row in self._lex_psm],
         )

@@ -1,5 +1,8 @@
+import enum
 from typing import Optional
 from itertools import chain
+
+from functions import Valuation, Value, Variable
 
 from z3 import (
     ArithRef,
@@ -9,15 +12,11 @@ from z3 import (
     IntVal,
     ModelRef,
     RatNumRef,
+    RealVal,
 )
 
 from utils import VAR_MANAGER, fst, satisfiable, snd, substitute_state
 
-Value = IntNumRef | RatNumRef | BoolRef
-
-Variable = ArithRef | BoolRef
-
-State = dict[Variable, Value | ArithRef | BoolRef]
 
 Q = Int("q")
 
@@ -37,12 +36,12 @@ class LinearFunction:
 
     @staticmethod
     def template(name: str, vars: list[Variable]):
-        a = [VAR_MANAGER.new_int_var(f"{name}_a_{i}") for i in range(len(vars))]
-        b = VAR_MANAGER.new_int_var(f"{name}_b")
+        a = [VAR_MANAGER.new_real_var(f"{name}_a_{i}") for i in range(len(vars))]
+        b = VAR_MANAGER.new_real_var(f"{name}_b")
         return LinearFunction(
             vars,
-            sum(a[i] * vars[i] for i in range(len(vars)))
-            + VAR_MANAGER.new_int_var(f"{name}_b"),
+            sum(a[i] * var for i, var in enumerate(vars))
+            + VAR_MANAGER.new_real_var(f"{name}_b"),
             a,
             b,
         )
@@ -55,10 +54,10 @@ class LinearFunction:
     def symbolic(self) -> ArithRef:
         return self._f
 
-    def __call__(self, state: State) -> ArithRef:
+    def __call__(self, state: Valuation) -> ArithRef:
         return substitute_state(self.symbolic, state)
 
-    def post_exp(self, successors: list[tuple[float, State]]) -> Value | ArithRef:
+    def post_exp(self, successors: list[tuple[float, Valuation]]) -> Value | ArithRef:
         return sum(map(lambda succ: succ[0] * self(succ[1]), successors))
 
     def instantiate(self, model: ModelRef):
@@ -68,10 +67,10 @@ class LinearFunction:
         return LinearFunction(
             self.vars,
             sum(
-                (val if (val := model[a]) is not None else IntVal(0)) * self._vars[i]
+                (val if (val := model[a]) is not None else RealVal(0)) * self._vars[i]
                 for i, a in enumerate(self._a)
             )
-            + (val if (val := model[self._b]) is not None else IntVal(0)),
+            + (val if (val := model[self._b]) is not None else RealVal(0)),
         )
 
     def __repr__(self) -> str:
@@ -108,14 +107,14 @@ class QLinearFunction:
     def __getitem__(self, q: IntNumRef) -> LinearFunction:
         return self.symbolic[q.as_long()]
 
-    def __call__(self, state: State, q: IntNumRef) -> ArithRef:
+    def __call__(self, state: Valuation, q: IntNumRef) -> ArithRef:
         return self.symbolic[q.as_long()](state)
 
     def __repr__(self) -> str:
         return "{" + ", ".join([f"{q}: {f}" for q, f in self.symbolic.items()]) + "}"
 
     def post_exp(
-        self, q: IntNumRef, succ_distr: list[tuple[float, State]]
+        self, q: IntNumRef, succ_distr: list[tuple[float, Valuation]]
     ) -> Value | ArithRef:
         return self.symbolic[q.as_long()].post_exp(succ_distr)
 
@@ -156,7 +155,7 @@ class QPolytopeFunction:
     def symbolic(self) -> dict[int, list[LinearFunction]]:
         return self._f
 
-    def __call__(self, state: State, q: IntNumRef) -> list[Value | ArithRef]:
+    def __call__(self, state: Valuation, q: IntNumRef) -> list[Value | ArithRef]:
         return [f(state) for f in self.symbolic[q.as_long()]]
 
     def __repr__(self) -> str:
@@ -182,7 +181,9 @@ class TransitionQLinearFunction:
     def symbolic(self) -> dict[int, dict[int, LinearFunction]]:
         return self._f
 
-    def __call__(self, state: State, q: IntNumRef, n: IntNumRef) -> Value | ArithRef:
+    def __call__(
+        self, state: Valuation, q: IntNumRef, n: IntNumRef
+    ) -> Value | ArithRef:
         return self.symbolic[q.as_long()][n.as_long()](state)
 
     def __repr__(self) -> str:
@@ -210,7 +211,7 @@ class StateUpdate:
     def var_updates(self) -> dict[Variable, LinearFunction]:
         return self._var_updates
 
-    def __call__(self, state: State) -> State:
+    def __call__(self, state: Valuation) -> Valuation:
         return {
             var: state[var]
             if (var_update := self.var_updates.get(var)) is None
@@ -218,7 +219,8 @@ class StateUpdate:
             for var in self.vars
         }
 
-    def symbolic_successor(self) -> State:
+    @property
+    def symbolic_successor(self) -> Valuation:
         return {
             var: var
             if (var_update := self.var_updates.get(var)) is None
@@ -251,10 +253,10 @@ class UpdateDistribution:
     def updates(self) -> list[StateUpdate]:
         return list(map(snd, self.distribution))
 
-    def successors(self, state: State) -> list[State]:
+    def successors(self, state: Valuation) -> list[Valuation]:
         return list(map(lambda update: update(state), self.updates))
 
-    def symbolic_successors(self) -> list[tuple[float, State]]:
+    def symbolic_successors(self) -> list[tuple[float, Valuation]]:
         return list(
             map(
                 lambda prob_update: (
@@ -265,7 +267,7 @@ class UpdateDistribution:
             )
         )
 
-    def __call__(self, state: State) -> list[tuple[float, State]]:
+    def __call__(self, state: Valuation) -> list[tuple[float, Valuation]]:
         return list(
             map(lambda update: (update[0], update[1](state)), self.distribution)
         )
@@ -284,14 +286,18 @@ class GuardedCommand:
     def command(self) -> UpdateDistribution:
         return self._update_distribution
 
-    def __call__(self, state: State) -> Optional[list[tuple[float, State]]]:
+    @property
+    def updates(self) -> list[StateUpdate]:
+        return self.command.updates
+
+    def __call__(self, state: Valuation) -> Optional[list[tuple[float, Valuation]]]:
         return (
             self.command(state)
             if satisfiable(substitute_state(self.guard, state))
             else None
         )
 
-    def successors(self, state: State) -> list[State]:
+    def successors(self, state: Valuation) -> list[Valuation]:
         return (
             self.command.successors(state)
             if satisfiable(substitute_state(self.guard, state))
@@ -302,7 +308,7 @@ class GuardedCommand:
 class ReactiveModule:
     def __init__(
         self,
-        init: list[State],
+        init: list[Valuation],
         vars: list[Variable],
         guarded_commands: list[GuardedCommand],
         state_space: BoolRef,
@@ -313,7 +319,7 @@ class ReactiveModule:
         self._state_space = state_space
 
     @property
-    def init(self) -> list[State]:
+    def init(self) -> list[Valuation]:
         return self._init
 
     @property
@@ -329,17 +335,17 @@ class ReactiveModule:
         return self._state_space
 
     @property
-    def symbolic_state(self) -> State:
+    def symbolic_state(self) -> Valuation:
         return {var: var for var in self.vars}
 
-    def successors(self, state: State) -> list[State]:
+    def successors(self, state: Valuation) -> list[Valuation]:
         return list(
             chain.from_iterable(
                 map(lambda command: command.successors(state), self.guarded_commands)
             )
         )
 
-    def __call__(self, state: State) -> list[list[tuple[float, State]]]:
+    def __call__(self, state: Valuation) -> list[list[tuple[float, Valuation]]]:
         """
         Computes the set of successor states of the given state and their probabilities.
         """

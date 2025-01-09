@@ -1,11 +1,9 @@
 from z3 import And, ArithRef, BoolRef, IntNumRef, IntVal, ModelRef, RealVal
+from functions import Value, Variable, Valuation
 from reactive_module import (
     LinearFunction,
     QLinearFunction,
     QPolytopeFunction,
-    State,
-    Value,
-    Variable,
 )
 from utils import VAR_MANAGER
 
@@ -35,10 +33,10 @@ class LinearTemplate:
             + (val if (val := model[self._b]) is not None else IntVal(0)),
         )
 
-    def __call__(self, state: State) -> Value | ArithRef:
+    def __call__(self, state: Valuation) -> Value | ArithRef:
         return self._template(state)
 
-    def post_exp(self, succ_distr: list[tuple[float, State]]) -> Value | ArithRef:
+    def post_exp(self, succ_distr: list[tuple[float, Valuation]]) -> Value | ArithRef:
         return sum(
             map(
                 lambda succ: succ[0] * self._template(succ[1]),
@@ -68,7 +66,7 @@ class QLinearTemplate:
     def symbolic(self):
         return {q: template.symbolic for q, template in self._template.items()}
 
-    def __call__(self, state: State, q: IntNumRef) -> bool | BoolRef:
+    def __call__(self, state: Valuation, q: IntNumRef) -> bool | BoolRef:
         assert isinstance(q, IntNumRef)
         return self._template[q.as_long()](state)
 
@@ -79,7 +77,7 @@ class QLinearTemplate:
         )
 
     def post_exp(
-        self, q: IntNumRef, succ_distr: list[tuple[float, State]]
+        self, q: IntNumRef, succ_distr: list[tuple[float, Valuation]]
     ) -> Value | ArithRef:
         return self._template[q.as_long()].post_exp(succ_distr)
 
@@ -114,7 +112,7 @@ class QPolytopeTemplate:
             for q, templates in self._template.items()
         }
 
-    def __call__(self, state: State, q: IntNumRef) -> list[Value | ArithRef]:
+    def __call__(self, state: Valuation, q: IntNumRef) -> list[Value | ArithRef]:
         return [template(state) for template in self._template[q.as_long()]]
 
     def instantiate(self, model: ModelRef) -> QPolytopeFunction:
@@ -155,7 +153,9 @@ class TransitionQLinearTemplate:
             for transition, templates in self._template.items()
         }
 
-    def __call__(self, state: State, q: IntNumRef, transition: int) -> Value | ArithRef:
+    def __call__(
+        self, state: Valuation, q: IntNumRef, transition: int
+    ) -> Value | ArithRef:
         return self._template[transition][q.as_long()](state)
 
     def instantiate(self, model: ModelRef) -> QPolytopeFunction:
