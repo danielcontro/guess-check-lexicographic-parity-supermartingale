@@ -312,11 +312,13 @@ class ReactiveModule:
         vars: list[Variable],
         guarded_commands: list[GuardedCommand],
         state_space: BoolRef,
+        parity_automaton_states: list[IntNumRef],
     ):
         self._init = init
         self._vars = vars
         self._guarded_commands = guarded_commands
         self._state_space = state_space
+        self._parity_automaton_states = parity_automaton_states
 
     @property
     def init(self) -> list[Valuation]:
@@ -337,6 +339,10 @@ class ReactiveModule:
     @property
     def symbolic_state(self) -> Valuation:
         return {var: var for var in self.vars}
+
+    @property
+    def parity_automaton_states(self) -> list[IntNumRef]:
+        return self._parity_automaton_states
 
     def successors(self, state: Valuation) -> list[Valuation]:
         return list(
