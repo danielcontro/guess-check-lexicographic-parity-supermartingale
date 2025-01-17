@@ -1,4 +1,5 @@
 import enum
+import itertools
 from typing import Optional
 from itertools import chain
 

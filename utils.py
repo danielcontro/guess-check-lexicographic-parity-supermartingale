@@ -103,14 +103,16 @@ def val_from_var(
 
 
 def substitute_state(expr: ArithRef | BoolRef, state):
-    return substitute(
-        expr,
-        *list(
-            map(
-                lambda kv: (kv[0], val_from_var(kv[0], kv[1])),
-                state.items(),
-            )
-        ),
+    return simplify(
+        substitute(
+            expr,
+            *list(
+                map(
+                    lambda kv: (kv[0], val_from_var(kv[0], kv[1])),
+                    state.items(),
+                )
+            ),
+        )
     )
 
     # return simplify(
