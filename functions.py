@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from enum import Enum
 import itertools
 from typing import Optional
 from utils import VAR_MANAGER, is_value, satisfiable, substitute_state
@@ -19,6 +20,25 @@ from z3 import (
 Value = IntNumRef | RatNumRef | BoolRef
 Variable = ArithRef | BoolRef
 Valuation = dict[Variable, Value | Variable]
+
+
+class Domain(Enum):
+    Int = 1
+    Real = 2
+    Bool = 3
+
+
+def get_domain(var: Variable) -> Domain:
+    assert isinstance(var, ArithRef) or isinstance(var, BoolRef)
+    if isinstance(var, ArithRef):
+        if var.is_int():
+            return Domain.Int
+        elif var.is_real():
+            return Domain.Real
+    elif isinstance(var, BoolRef) and var.is_bool():
+        return Domain.Bool
+    else:
+        raise ValueError(f"Unknown variable type: {var}")
 
 
 class Function(ABC):
@@ -185,7 +205,7 @@ class IndexedPolynomial:
     ):
         functions = [
             Polynomial.template(
-                f"{name}_f_{"".join(str(index).split())}",
+                f"{name}_f_{''.join(str(index).split())}",
                 list(filter(lambda var: var not in indexing.keys(), vars)),
                 degree,
             )
@@ -238,6 +258,12 @@ class IndexedPolynomial:
                 ]
             )
         )
+
+    def index_constraint(
+        self,
+        index: tuple[Value, ...],
+    ) -> BoolRef:
+        return And(*[var == index[i] for i, var in enumerate(self.indexing_ordering)])
 
     def eval(
         self, state: Valuation, index: Optional[tuple[Value | Variable, ...]] = None

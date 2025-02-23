@@ -23,7 +23,6 @@ from z3 import (
     unsat,
 )
 
-
 T = TypeVar("T")
 U = TypeVar("U")
 
@@ -114,18 +113,6 @@ def substitute_state(expr: ArithRef | BoolRef, state):
             ),
         )
     )
-
-    # return simplify(
-    #     substitute(
-    #         expr,
-    #         *list(
-    #             map(
-    #                 lambda kv: (kv[0], val_from_var(kv[0], kv[1])),
-    #                 state.items(),
-    #             )
-    #         ),
-    #     )
-    # )
 
 
 def integer_to_int(integer: IntNumRef) -> IntNumRef:

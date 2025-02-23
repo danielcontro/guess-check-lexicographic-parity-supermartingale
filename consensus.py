@@ -1,16 +1,13 @@
 import itertools
-import random
 from z3 import (
     And,
-    ArithRef,
     Int,
-    IntNumRef,
     IntVal,
-    RatNumRef,
+    Real,
     RealVal,
 )
 
-from functions import IndexedPolynomial
+from functions import IndexedPolynomial, Polynomial
 from reactive_module import (
     GuardedCommand,
     LinearFunction,
@@ -20,13 +17,11 @@ from reactive_module import (
     Variable,
 )
 
-import matplotlib.pyplot as plt
-
-from guess_check import guess_check, plot_lexpsm
+from guess_check import guess_check
 
 
 N = 1
-K = 2
+K = 2**17
 RANGE = 2 * (K + 1) * N
 COUNTER_INIT = (K + 1) * N
 LEFT = N
@@ -38,11 +33,11 @@ pc1 = Int("pc1")
 counter = Int("counter")
 q = Int("q")
 state_space = And(
-    coin1 >= 0,
-    pc1 >= 0,
     counter >= 0,
     counter <= RANGE,
+    coin1 >= 0,
     coin1 <= 1,
+    pc1 >= 0,
     pc1 <= 3,
     q >= 0,
     q <= 1,
@@ -108,44 +103,12 @@ system = ReactiveModule(
 
 parity_objectives = [q == IntVal(0), q == IntVal(1)]
 
-lex_psm_template = [
-    IndexedPolynomial.template(
-        f"V{i}",
-        system.vars,
-        {
-            q: [IntVal(0), IntVal(1)],
-            pc1: [IntVal(0), IntVal(1), IntVal(2), IntVal(3)],
-            coin1: [IntVal(0), IntVal(1)],
-        },
-        2,
-    )
-    for i in range(len(parity_objectives))
-]
-invariant_template = IndexedPolynomial.template(
-    "I",
-    system.vars,
-    {
-        q: [IntVal(0), IntVal(1)],
-        pc1: [IntVal(0), IntVal(1), IntVal(2), IntVal(3)],
-        coin1: [IntVal(0), IntVal(1)],
-    },
-    2,
-)
-
 indexing = {
     q: [IntVal(0), IntVal(1)],
     pc1: [IntVal(0), IntVal(1), IntVal(2), IntVal(3)],
     coin1: [IntVal(0), IntVal(1)],
 }
 
-type_invariant = {
-    q: [1],
-    pc1: [0, 1, 2, 3],
-    coin1: [0, 1],
-    counter: [i for i in range(0, RANGE + 1, 2)],
-}
-
-SAMPLES = 500
 
 # dataset = system.init.copy() + [
 #     {var: IntVal(random.sample(type_invariant[var], 1)[0]) for var in system.vars}
@@ -156,7 +119,7 @@ SAMPLES = 500
 #     print(state)
 
 
-dataset = system.init.copy() + list(
+even_dataset = system.init.copy() + list(
     map(
         lambda val: {q: val[0], pc1: val[1], coin1: val[2], counter: val[3]},
         itertools.product(
@@ -168,9 +131,249 @@ dataset = system.init.copy() + list(
     )
 )
 
-lex_psm, inv = guess_check(
-    system, parity_objectives, RealVal(1), indexing, 2, RANGE, dataset
+odd_dataset = system.init.copy() + list(
+    map(
+        lambda val: {q: val[0], pc1: val[1], coin1: val[2], counter: val[3]},
+        itertools.product(
+            [IntVal(0), IntVal(1)],
+            [IntVal(i) for i in range(4)],
+            [IntVal(0), IntVal(1)],
+            [IntVal(i) for i in range(1, RANGE + 1, 2)],
+        ),
+    )
 )
-plot_lexpsm(lex_psm, inv, system, RANGE, "done")
+invariant_k_2 = IndexedPolynomial(
+    system.vars,
+    {
+        q: [IntVal(0), IntVal(1)],
+        pc1: [IntVal(0), IntVal(1), IntVal(2), IntVal(3)],
+        coin1: [IntVal(0), IntVal(1)],
+    },
+    [
+        Polynomial([counter], 2, RealVal(0)),
+        Polynomial([counter], 2, RealVal(0)),
+        Polynomial([counter], 2, RealVal(0)),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(-2) / RealVal(85) * counter
+            + RealVal(1) / RealVal(170) * counter**2,
+        ),
+        Polynomial([counter], 2, RealVal(0)),
+        Polynomial([counter], 2, RealVal(0)),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(1) / RealVal(17) * counter + RealVal(-1) / RealVal(34) * counter**2,
+        ),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(-12) / RealVal(17)
+            + RealVal(5) / RealVal(17) * counter
+            + RealVal(-1) / RealVal(34) * counter**2,
+        ),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(-5) / RealVal(102)
+            + RealVal(1) / RealVal(17) * counter
+            + RealVal(-1) / RealVal(102) * counter**2,
+        ),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(-5) / RealVal(102)
+            + RealVal(1) / RealVal(17) * counter
+            + RealVal(-1) / RealVal(102) * counter**2,
+        ),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(-5) / RealVal(102)
+            + RealVal(1) / RealVal(17) * counter
+            + RealVal(-1) / RealVal(102) * counter**2,
+        ),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(5) / RealVal(136) * counter
+            + RealVal(-1) / RealVal(136) * counter**2,
+        ),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(3) / RealVal(85) * counter
+            + RealVal(-1) / RealVal(170) * counter**2,
+        ),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(-9) / RealVal(34)
+            + RealVal(9) / RealVal(68) * counter
+            + RealVal(-1) / RealVal(68) * counter**2,
+        ),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(1) / RealVal(17) * counter + RealVal(-1) / RealVal(34) * counter**2,
+        ),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(-12) / RealVal(17)
+            + RealVal(5) / RealVal(17) * counter
+            + RealVal(-1) / RealVal(34) * counter**2,
+        ),
+    ],
+)
+
+invariant_k_32 = IndexedPolynomial(
+    system.vars,
+    {
+        q: [IntVal(0), IntVal(1)],
+        pc1: [IntVal(0), IntVal(1), IntVal(2), IntVal(3)],
+        coin1: [IntVal(0), IntVal(1)],
+    },
+    [
+        Polynomial([counter], 2, RealVal(0)),
+        Polynomial([counter], 2, RealVal(0)),
+        Polynomial([counter], 2, RealVal(0)),
+        Polynomial([counter], 2, RealVal(0)),
+        Polynomial([counter], 2, RealVal(0)),
+        Polynomial([counter], 2, RealVal(0)),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(3) / RealVal(1888) * counter
+            + RealVal(-3) / RealVal(3776) * counter**2,
+        ),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(-198) / RealVal(59)
+            + RealVal(195) / RealVal(1888) * counter
+            + RealVal(-3) / RealVal(3776) * counter**2,
+        ),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(-65) / RealVal(79296)
+            + RealVal(11) / RealVal(13216) * counter
+            + RealVal(-1) / RealVal(79296) * counter**2,
+        ),
+        Polynomial([counter], 2, RealVal(0)),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(-201) / RealVal(245440)
+            + RealVal(51) / RealVal(61360) * counter
+            + RealVal(-3) / RealVal(245440) * counter**2,
+        ),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(3) / RealVal(3776)
+            + RealVal(3) / RealVal(3835) * counter
+            + RealVal(-3) / RealVal(245440) * counter**2,
+        ),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(99) / RealVal(122720) * counter
+            + RealVal(-3) / RealVal(245440) * counter**2,
+        ),
+        Polynomial([counter], 2, RealVal(0)),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(3) / RealVal(1888) * counter
+            + RealVal(-3) / RealVal(3776) * counter**2,
+        ),
+        Polynomial(
+            [counter],
+            2,
+            RealVal(-198) / RealVal(59)
+            + RealVal(195) / RealVal(1888) * counter
+            + RealVal(-3) / RealVal(3776) * counter**2,
+        ),
+    ],
+)
+
+parametric_invariant = IndexedPolynomial(
+    system.vars,
+    {
+        q: [IntVal(0), IntVal(1)],
+        pc1: [IntVal(0), IntVal(1), IntVal(2), IntVal(3)],
+        coin1: [IntVal(0), IntVal(1)],
+    },
+    [
+        # 0,0,0
+        Polynomial([counter], 2, RealVal(0)),
+        # 0,0,1
+        Polynomial([counter], 2, RealVal(0)),
+        # 0,1,0
+        Polynomial([counter], 2, RealVal(0)),
+        # 0,1,1
+        Polynomial([counter], 2, RealVal(0)),
+        # 0,2,0
+        Polynomial([counter], 2, RealVal(0)),
+        # 0,2,1
+        Polynomial([counter], 2, RealVal(0)),
+        # 0,3,0 (x <= L)
+        Polynomial([counter], 1, -counter + (RealVal(LEFT) + RealVal(1))),
+        # 0,3,1 (x >= R)
+        Polynomial([counter], 1, counter - (RealVal(RIGHT) - RealVal(1))),
+        # 1,0,0 (L < x < R)
+        Polynomial(
+            [counter],
+            2,
+            -(counter**2)
+            + (RealVal(RIGHT) + RealVal(LEFT)) * counter
+            + (RealVal(LEFT) * RealVal(RIGHT)),
+        ),
+        # 1,0,1
+        Polynomial([counter], 2, RealVal(0)),
+        # 1,1,0 (L < x < R)
+        Polynomial(
+            [counter],
+            2,
+            -(counter**2)
+            + (RealVal(RIGHT) + RealVal(LEFT)) * counter
+            + (RealVal(LEFT) * RealVal(RIGHT)),
+        ),
+        # 1,1,1 (L < x < R)
+        Polynomial(
+            [counter],
+            2,
+            -(counter**2)
+            + (RealVal(RIGHT) + RealVal(LEFT)) * counter
+            + (RealVal(LEFT) * RealVal(RIGHT)),
+        ),
+        # 1,2,0 (0 < x < RANGE
+        Polynomial(
+            [counter],
+            2,
+            -(counter**2) + RealVal(RANGE) * counter + RealVal(RANGE),
+        ),
+        # 1,2,1
+        Polynomial([counter], 2, RealVal(0)),
+        # 1,3,0 (x <= L)
+        Polynomial([counter], 1, -counter + (RealVal(LEFT) + RealVal(1))),
+        # 1,3,1 (x >= R)
+        Polynomial([counter], 1, counter - (RealVal(RIGHT) - RealVal(1))),
+    ],
+)
+
+lex_psm, inv = guess_check(
+    system,
+    parity_objectives,
+    RealVal(1),
+    indexing,
+    2,
+    RANGE,
+    dataset=None,
+    precomputed_invariant=parametric_invariant,
+)
 # print(lex_psm)
 # print(inv)

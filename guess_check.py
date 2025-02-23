@@ -23,52 +23,17 @@ from z3 import (
     unsat,
 )
 
+LOGGING = True
+
 
 def extract_index(state: Valuation, indexing: list[Variable]):
     return tuple(state[var] for var in indexing)
-
-
-def index_constraint(index: tuple[Value, ...], f: IndexedPolynomial) -> BoolRef:
-    return And(*[var == index[i] for i, var in enumerate(f.indexing_ordering)])
 
 
 def invariant_initiation(
     system: ReactiveModule, invariant: IndexedPolynomial
 ) -> list[BoolRef]:
     return [inv_i > 0 for init in system.init.copy() for inv_i in invariant.eval(init)]
-
-
-def non_negativity(
-    system: ReactiveModule,
-    invariant: IndexedPolynomial,
-    lex_psm: list[IndexedPolynomial],
-    state: Valuation,
-) -> list[BoolRef]:
-    # print("Non-negativity")
-    constraints = []
-    for index in invariant.induced_indexes(invariant.get_index(state)):
-        for psm in lex_psm:
-            if not satisfiable(
-                premise := substitute_state(
-                    And(
-                        system.state_space,
-                        index_constraint(index, invariant),
-                        invariant.eval_indexed(state, index) > 0,
-                    ),
-                    state,
-                )
-            ):
-                continue
-            constraint = substitute_state(
-                Implies(premise, psm.eval_indexed(state, index) >= 0),
-                state,
-            )
-            # print("Constraint")
-            # print(constraint, "\n")
-            constraints.append(constraint)
-    # print()
-
-    return constraints
 
 
 def invariant_consecution(
@@ -88,7 +53,7 @@ def invariant_consecution(
                         And(
                             system.state_space,
                             gc.guard,
-                            index_constraint(index, invariant),
+                            invariant.index_constraint(index),
                             invariant.eval_indexed(state, index) > 0,
                         ),
                         state,
@@ -135,6 +100,40 @@ def invariant_consecution(
     return constraints
 
 
+def non_negativity(
+    system: ReactiveModule,
+    invariant: IndexedPolynomial,
+    lex_psm: list[IndexedPolynomial],
+    state: Valuation,
+) -> list[BoolRef]:
+    # print("Non-negativity")
+    # NOTE: Assuming that invariant and lexpsm have the same indexing
+    constraints = []
+    for index in invariant.induced_indexes(invariant.get_index(state)):
+        if not satisfiable(
+            premise := substitute_state(
+                And(
+                    system.state_space,
+                    invariant.index_constraint(index),
+                    invariant.eval_indexed(state, index) > 0,
+                ),
+                state,
+            )
+        ):
+            continue
+        for psm in lex_psm:
+            constraint = substitute_state(
+                Implies(premise, psm.eval_indexed(state, index) >= 0),
+                state,
+            )
+            # print("Constraint")
+            # print(constraint, "\n")
+            constraints.append(constraint)
+    # print()
+
+    return constraints
+
+
 def drift(
     system: ReactiveModule,
     invariant: IndexedPolynomial,
@@ -169,7 +168,7 @@ def drift(
                             system.state_space,
                             objective,
                             gc.guard,
-                            index_constraint(index, invariant),
+                            invariant.index_constraint(index),
                             invariant.eval_indexed(state, index) > 0,
                         ),
                         state,
@@ -224,13 +223,16 @@ def lex_post(
     """
 
     return [
-        simplify(sum(
-            (
-                p * psm.eval_indexed(succ, extract_index(succ, psm.indexing_ordering))
-                for p, succ in succ_distr
-            ),
-            RealVal(0),
-        ))
+        simplify(
+            sum(
+                (
+                    p
+                    * psm.eval_indexed(succ, extract_index(succ, psm.indexing_ordering))
+                    for p, succ in succ_distr
+                ),
+                RealVal(0),
+            )
+        )
         for psm in lex_psm[: d + 1]
     ]
 
@@ -282,8 +284,9 @@ def guess(
     epsilon: ArithRef,
     indexing: dict[Variable, list[Value]],
     degree: int = 1,
+    provided_invariant: Optional[IndexedPolynomial] = None,
 ):
-    # print("Guessing")
+    print("Guessing")
     lex_psm_template = [
         IndexedPolynomial.template(
             f"V{i}",
@@ -293,29 +296,31 @@ def guess(
         )
         for i in range(len(parity_objectives))
     ]
-    invariant_template = IndexedPolynomial.template(
-        "I",
-        system.vars,
-        indexing,
-        degree,
-    )
-    # print("Guess constraints")
+    constraints = []
 
-    constraints = invariant_initiation(system, invariant_template) + list(
-        itertools.chain(
-            *[
-                psm_constraints(
-                    system,
-                    invariant_template,
-                    lex_psm_template,
-                    parity_objectives,
-                    state,
-                    epsilon,
-                )
-                for state in dataset
-            ]
+    if provided_invariant is None:
+        invariant = IndexedPolynomial.template(
+            "I",
+            system.vars,
+            indexing,
+            degree,
         )
-    )
+        constraints.extend(invariant_initiation(system, invariant))
+        for state in dataset:
+            constraints.extend(invariant_consecution(system, invariant, state))
+    else:
+        invariant = provided_invariant
+    # print("Invariant constraints")
+    # for constraint in constraints:
+    #     print(constraint)
+
+    for state in dataset:
+        constraints.extend(
+            non_negativity(system, invariant, lex_psm_template, state)
+            + drift(
+                system, invariant, lex_psm_template, state, parity_objectives, epsilon
+            )
+        )
     # for state in dataset:
     #     # print("State")
     #     # print(state)
@@ -331,10 +336,10 @@ def guess(
     model = solver.model()
     # print("Guess model parameters", len(model.decls()))
 
-    # print("Guessing Done")
+    print("Guessing Done")
     return [
         psm_template.instantiate(model) for psm_template in lex_psm_template
-    ], invariant_template.instantiate(model)
+    ], invariant.instantiate(model)
 
 
 def extract_counterexample(system: ReactiveModule, model: ModelRef) -> Valuation:
@@ -348,7 +353,7 @@ def check(
     parity_objectives: list[ParityObjective],
     epsilon: ArithRef,
 ):
-    # print("Checking")
+    print("Checking")
     constraints = [
         *invariant_initiation(system, invariant),
         *psm_constraints(
@@ -383,7 +388,7 @@ def check(
                 # print("Model")
                 # print(solver.model())
 
-    # print("Check done")
+    print("Check done")
     return counterexamples
 
 
@@ -394,7 +399,9 @@ def guess_check(
     indexing: dict[Variable, list[Value]],
     degree: int = 1,
     plot_range: int = 10,
-    dataset: Optional[list[Valuation]] = None,):
+    dataset: Optional[list[Valuation]] = None,
+    precomputed_invariant: Optional[IndexedPolynomial] = None,
+):
     if dataset is None:
         dataset = system.init.copy()
     # print("Dataset")
@@ -408,7 +415,13 @@ def guess_check(
         # for state in dataset:
         #     print(state)
         lex_psm, invariant = guess(
-            system, dataset, parity_objectives, epsilon, indexing, degree
+            system,
+            dataset,
+            parity_objectives,
+            epsilon,
+            indexing,
+            degree,
+            precomputed_invariant,
         )
         print("lex_psm")
         for psm in lex_psm:
@@ -416,70 +429,130 @@ def guess_check(
         print("invariant")
         print(invariant)
 
-        plot_lexpsm(lex_psm, invariant, system, plot_range, i)
+        # if LOGGING:
+        #     plot_lexpsm(lex_psm, invariant, system, plot_range, i)
         counterexamples = check(system, lex_psm, invariant, parity_objectives, epsilon)
 
         if len(counterexamples) == 0:
+            print("Dataset size to convergence:", len(dataset))
             return lex_psm, invariant
-        if any(
-            any(
-                all(state[var] == counterexample[var] for var in system.vars)
-                for state in dataset
-            )
-            for counterexample in counterexamples
-        ):
-            print("Counterexamples already in dataset!")
         print("New counterexamples")
         for counterexample in counterexamples:
             print(counterexample)
-        dataset.extend(counterexamples)
+        for counterexample in counterexamples:
+            if any(
+                all(state[var] == counterexample[var] for var in system.vars)
+                for state in dataset
+            ):
+                print("Counterexample already in dataset!")
+                print(counterexample)
+            else:
+                dataset.append(counterexample)
+        # dataset.extend(counterexamples)
 
     raise ValueError("TIMEOUT: No PSM found!")
+
 
 def plot_lexpsm(lex_psm, inv, system: ReactiveModule, plot_range, i):
     xs = [i for i in range(plot_range + 1)]
     pc_range = 4
     coin_range = 2
-    fig, ax = plt.subplots(pc_range, coin_range, figsize=(20, 15))
-    fig.suptitle(f"LexPSM (1,pc,coin1) iter {i}")
+    fig1, ax1 = plt.subplots(pc_range, coin_range, figsize=(20, 15))
+    fig2, ax2 = plt.subplots(pc_range, coin_range, figsize=(20, 15))
+    fig1.suptitle(f"LexPSM (1,pc,coin1) iter {i + 1}")
     for coin in range(coin_range):
-        ax[0, coin].set_title(f"coin1={coin}")
+        ax1[0, coin].set_title(f"coin1={coin}")
         for pc in range(pc_range):
             index = (IntVal(1), IntVal(pc), IntVal(coin))
-            posts = [lex_post(lex_psm, list(itertools.chain(*system({Int("counter"): IntVal(x), Int("pc1"): IntVal(pc), Int("q"): IntVal(1), Int("coin1"): IntVal(coin)}))), len(lex_psm)) for x in xs]
+            posts = [
+                lex_post(
+                    lex_psm,
+                    list(
+                        itertools.chain(
+                            *system(
+                                {
+                                    Int("counter"): IntVal(x),
+                                    Int("pc1"): IntVal(pc),
+                                    Int("q"): IntVal(1),
+                                    Int("coin1"): IntVal(coin),
+                                }
+                            )
+                        )
+                    ),
+                    len(lex_psm),
+                )
+                for x in xs
+            ]
             for p in range(len(lex_psm)):
                 ys = [
-                    real_to_float(lex_psm[p].eval_indexed({Int("counter"): IntVal(x)}, index))
+                    real_to_float(
+                        lex_psm[p].eval_indexed({Int("counter"): IntVal(x)}, index)
+                    )
                     for x in xs
                 ]
-                post = [
-                    real_to_float(posts[x][p])
-                    for x in xs
-                ]
+                post = [real_to_float(posts[x][p]) for x in xs]
                 eps = [ys[i] - post[i] for i in range(len(ys))]
                 if p == 0:
-                    ax[pc, coin].plot(xs, ys, color="orange", linestyle="-", label="V0")
-                    ax[pc, coin].plot(xs, post, color="orange", linestyle="--", label="PostV0")
-                    ax[pc, coin].plot(xs, eps, color="green", linestyle="-", label="eps_V0")
+                    ax1[pc, coin].plot(
+                        xs, ys, color="orange", linestyle="-", label="V0"
+                    )
+                    ax1[pc, coin].plot(
+                        xs, post, color="orange", linestyle="--", label="PostV0"
+                    )
+                    ax1[pc, coin].plot(
+                        xs, eps, color="green", linestyle="-", label="eps_V0"
+                    )
+                    ax2[pc, coin].plot(
+                        xs, ys, color="orange", linestyle="-", label="V0"
+                    )
+                    ax2[pc, coin].plot(
+                        xs, post, color="orange", linestyle="--", label="PostV0"
+                    )
+                    ax2[pc, coin].plot(
+                        xs, eps, color="green", linestyle="-", label="eps_V0"
+                    )
                 else:
-                    ax[pc, coin].plot(xs, ys, color="red", linestyle="-", label="V1")
-                    ax[pc, coin].plot(xs, ys, color="red", linestyle="--", label="PostV1")
-                    ax[pc, coin].plot(xs, eps, color="lightgreen", linestyle="-", label="eps_V1")
+                    ax1[pc, coin].plot(xs, ys, color="red", linestyle="-", label="V1")
+                    ax1[pc, coin].plot(
+                        xs, ys, color="red", linestyle="--", label="PostV1"
+                    )
+                    ax1[pc, coin].plot(
+                        xs, eps, color="lightgreen", linestyle="-", label="eps_V1"
+                    )
+                    ax2[pc, coin].plot(xs, ys, color="red", linestyle="-", label="V1")
+                    ax2[pc, coin].plot(
+                        xs, ys, color="red", linestyle="--", label="PostV1"
+                    )
+                    ax2[pc, coin].plot(
+                        xs, eps, color="lightgreen", linestyle="-", label="eps_V1"
+                    )
             ys = [
-                real_to_float(inv.eval_indexed({Int("counter"): IntVal(x)}, index)) for x in xs
+                real_to_float(inv.eval_indexed({Int("counter"): IntVal(x)}, index))
+                for x in xs
             ]
-            ax[pc, coin].plot(xs, ys, color="blue", label="inv")
-            ax[pc, coin].set_ylabel(f"pc={pc}")
-            ax[pc, coin].spines["top"].set_color("none")
-            ax[pc, coin].spines["bottom"].set_position("zero")
-            ax[pc, coin].spines["left"].set_position("zero")
-            ax[pc, coin].spines["right"].set_color("none")
-            ax[pc, coin].set_ylim(-2, 5)
-    ax[0, 1].legend()
+            ax1[pc, coin].plot(xs, ys, color="blue", label="inv")
+            ax1[pc, coin].set_ylabel(f"pc={pc}")
+            ax1[pc, coin].spines["top"].set_color("none")
+            ax1[pc, coin].spines["bottom"].set_position("zero")
+            ax1[pc, coin].spines["left"].set_position("zero")
+            ax1[pc, coin].spines["right"].set_color("none")
+            ax1[pc, coin].set_ylim(-2, 5)
+            ax2[pc, coin].plot(xs, ys, color="blue", label="inv")
+            ax2[pc, coin].set_ylabel(f"pc={pc}")
+            ax2[pc, coin].spines["top"].set_color("none")
+            ax2[pc, coin].spines["bottom"].set_position("zero")
+            ax2[pc, coin].spines["left"].set_position("zero")
+            ax2[pc, coin].spines["right"].set_color("none")
+    ax1[0, 1].legend()
+    ax2[0, 1].legend()
     # for ax in fig.get_axes():
     #     ax.label_outer()
-    plt.savefig(f"./out/consensus/{i}.png")
-    plt.show()
+    fig1.savefig(f"./out/consensus/test/k_1024/V/zoom/{i + 1}.png")
+    plt.close(fig1)
+    fig2.savefig(f"./out/consensus/test/k_1024/V/{i + 1}.png")
+    plt.close(fig2)
+    # plt.show()
+
 
 def real_to_float(real: ArithRef) -> float:
     if real is None:
